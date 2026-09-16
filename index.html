@@ -51,21 +51,30 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
+    perspective: 1400px;
+    transform-style: preserve-3d;
     -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 8%, #000 92%, transparent 100%);
     mask-image: linear-gradient(to bottom, transparent 0, #000 8%, #000 92%, transparent 100%);
   }
 
   /* Position (loop) and hover (Motion) are split across two elements so the
      continuous per-frame translateY write and Motion's spring-driven scale/glow
-     never fight over the same element's transform/inline styles. */
+     never fight over the same element's transform/inline styles. The slot also
+     carries the per-frame depth transform (rotateX + scale) and opacity fade,
+     since it's already raw-JS-driven and untouched by Motion; the inner card
+     only gets its shape (width/aspect-ratio/border-radius) written inline,
+     which never collides with Motion's transform/boxShadow/borderColor. */
   .loop-card-slot {
     position: absolute;
     left: 50%;
     top: 0;
     width: min(88vw, 460px);
     height: clamp(130px, 20vw, 190px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transform: translate3d(-50%, -9999px, 0);
-    will-change: transform;
+    will-change: transform, opacity;
   }
   .loop-card {
     position: relative;
@@ -346,10 +355,14 @@
   let trackHeight = NUM_CARDS * spacing;
   let containerHeight = window.innerHeight;
   let centerOffset = trackHeight / 2 - containerHeight / 2;
+  let centerWidthPx = 460;      // resting card width, recomputed below to match the CSS min(88vw, 460px)
+  let centerAspect = 460 / 170; // resting width/height ratio, recomputed below
 
   function measure() {
     const first = cards[0].slotEl;
     cardHeight = first.getBoundingClientRect().height || cardHeight;
+    centerWidthPx = first.getBoundingClientRect().width || centerWidthPx;
+    centerAspect = centerWidthPx / cardHeight;
     spacing = cardHeight + GAP;
     trackHeight = NUM_CARDS * spacing;
     containerHeight = viewport.clientHeight;
@@ -403,8 +416,11 @@
   const MAX_BOOST = 10;
   const VELOCITY_DEADZONE = 8; // px/frame @60fps onder deze snelheid triggert geen versnelling
   const PROXIMITY_MARGIN = 140;
-  const CATCH_SPRING = { type: "spring", stiffness: 140, damping: 28, restSpeed: 0.01 };
-  const RELEASE_SPRING = { type: "spring", stiffness: 35, damping: 12, restSpeed: 0.01 };
+  const VELOCITY_WINDOW_MS = 120; // voortschrijdend gemiddelde over de laatste ~meerdere frames, dempt jitter
+  // Kritisch gedempt (damping = 2*sqrt(stiffness)): geen overshoot/bounce, zowel bij optrekken
+  // als afremmen dezelfde "zwaar en traag" fysica — geen los-vast schakelaar tussen twee springs.
+  const SPEED_SPRING_STIFFNESS = 55;
+  const SPEED_SPRING = { type: "spring", stiffness: SPEED_SPRING_STIFFNESS, damping: 2 * Math.sqrt(SPEED_SPRING_STIFFNESS), restSpeed: 0.01 };
   const IDLE_MS = 90; // grace period after the last qualifying drag before easing back down
 
   const speed = { value: BASE_SPEED };
@@ -420,6 +436,7 @@
   }
 
   let lastPointerY = null, lastPointerTime = 0;
+  let velocitySamples = []; // rolling window of { t, v } — v in px/frame @60fps
 
   window.addEventListener("pointermove", onPointerMove, { passive: true });
 
@@ -435,15 +452,19 @@
 
       const dt = Math.min(Math.max(now - lastPointerTime, 1), 80);
       const dy = y - lastPointerY;
+      const instantPxPerFrame = near ? (Math.max(dy, 0) / dt) * 16.7 : 0;
 
-      if (near && dy > 0) {
-        const instantPxPerFrame = (dy / dt) * 16.7;
-        const overThreshold = Math.max(instantPxPerFrame - VELOCITY_DEADZONE, 0);
+      velocitySamples.push({ t: now, v: instantPxPerFrame });
+      while (velocitySamples.length && now - velocitySamples[0].t > VELOCITY_WINDOW_MS) velocitySamples.shift();
+
+      if (near) {
+        const avgPxPerFrame = velocitySamples.reduce((sum, s) => sum + s.v, 0) / velocitySamples.length;
+        const overThreshold = Math.max(avgPxPerFrame - VELOCITY_DEADZONE, 0);
         const target = BASE_SPEED + Math.min(overThreshold * BOOST_GAIN, MAX_BOOST);
-        retargetSpeed(target, CATCH_SPRING);
+        retargetSpeed(target, SPEED_SPRING);
 
         clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => retargetSpeed(BASE_SPEED, RELEASE_SPRING), IDLE_MS);
+        idleTimer = setTimeout(() => retargetSpeed(BASE_SPEED, SPEED_SPRING), IDLE_MS);
       }
     }
 
@@ -495,6 +516,41 @@
   }
 
   /* =====================================================
+     DEPTH — turns the vertical band into a rotating drum: each card tilts,
+     scales, fades and morphs shape based on its distance from screen-center.
+     ===================================================== */
+  const MAX_ROTATE_DEG = 18;   // top tilts back, bottom tilts forward
+  const EDGE_SCALE = 0.8;      // scale at the extreme edge of the effect range
+  const EDGE_OPACITY = 0.32;   // opacity at the extreme edge
+  const CENTER_RADIUS = 16;    // px, matches the resting 1rem border-radius
+  const EDGE_RADIUS = 34;      // px, rounder toward the edges
+  const EDGE_ASPECT = 1;       // near-square toward the edges
+  const EDGE_WIDTH_RATIO = 0.5; // edge card width as a fraction of the center width
+
+  function smoothstep(t) { return t * t * (3 - 2 * t); }
+
+  function applyDepth(c, y) {
+    const cardCenterY = y + cardHeight / 2;
+    const halfRange = containerHeight / 2 || 1;
+    const t = Math.min(Math.max((cardCenterY - halfRange) / halfRange, -1), 1);
+    const edgeT = smoothstep(Math.abs(t));
+
+    const rotateXDeg = -t * MAX_ROTATE_DEG;
+    const depthScale = 1 - edgeT * (1 - EDGE_SCALE);
+    const opacity = 1 - edgeT * (1 - EDGE_OPACITY);
+    const width = centerWidthPx - edgeT * (centerWidthPx - centerWidthPx * EDGE_WIDTH_RATIO);
+    const aspect = centerAspect - edgeT * (centerAspect - EDGE_ASPECT);
+    const radius = CENTER_RADIUS + edgeT * (EDGE_RADIUS - CENTER_RADIUS);
+
+    c.slotEl.style.transform = `translate3d(-50%, ${y}px, 0) rotateX(${rotateXDeg}deg) scale(${depthScale})`;
+    c.slotEl.style.opacity = opacity;
+    c.el.style.width = `${width}px`;
+    c.el.style.height = "auto";
+    c.el.style.aspectRatio = aspect;
+    c.el.style.borderRadius = `${radius}px`;
+  }
+
+  /* =====================================================
      ANIMATION LOOP — advances position using speed.value, which Motion's
      spring animations above continuously ease toward their target.
      ===================================================== */
@@ -514,7 +570,7 @@
         let y = (c.baseY + virtualOffset) % trackHeight;
         if (y < 0) y += trackHeight;
         y -= centerOffset;
-        c.slotEl.style.transform = `translate3d(-50%, ${y}px, 0)`;
+        applyDepth(c, y);
       }
     }
 
