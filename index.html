@@ -399,10 +399,11 @@
      LOOP SPEED — eased via a Motion spring on a plain value
      ===================================================== */
   const BASE_SPEED = 0.42;   // px per frame @60fps, rustig basistempo
-  const BOOST_GAIN = 2.4;
-  const MAX_BOOST = 20;
+  const BOOST_GAIN = 1.3;
+  const MAX_BOOST = 10;
+  const VELOCITY_DEADZONE = 8; // px/frame @60fps onder deze snelheid triggert geen versnelling
   const PROXIMITY_MARGIN = 140;
-  const CATCH_SPRING = { type: "spring", stiffness: 260, damping: 30, restSpeed: 0.01 };
+  const CATCH_SPRING = { type: "spring", stiffness: 140, damping: 28, restSpeed: 0.01 };
   const RELEASE_SPRING = { type: "spring", stiffness: 35, damping: 12, restSpeed: 0.01 };
   const IDLE_MS = 90; // grace period after the last qualifying drag before easing back down
 
@@ -437,7 +438,8 @@
 
       if (near && dy > 0) {
         const instantPxPerFrame = (dy / dt) * 16.7;
-        const target = BASE_SPEED + Math.min(instantPxPerFrame * BOOST_GAIN, MAX_BOOST);
+        const overThreshold = Math.max(instantPxPerFrame - VELOCITY_DEADZONE, 0);
+        const target = BASE_SPEED + Math.min(overThreshold * BOOST_GAIN, MAX_BOOST);
         retargetSpeed(target, CATCH_SPRING);
 
         clearTimeout(idleTimer);
