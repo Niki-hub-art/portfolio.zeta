@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portfolio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          neon: { DEFAULT: '#1d4ed8', light: '#60a5fa' }
+        },
+        fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] }
+      }
+    }
+  };
+</script>
+<style>
+  :root { color-scheme: dark; }
+  html, body { background: #000; height: 100%; }
+  body {
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    overscroll-behavior: none;
+    overflow-x: hidden;
+  }
+  ::selection { background: #1d4ed8; color: #fff; }
+
+  /* ---------- Structural layout (independent of Tailwind CDN) ---------- */
+  header#site-header {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 1.5rem;
+    pointer-events: none;
+  }
+  main#loop-section {
+    position: relative;
+    height: 100vh;
+    width: 100%;
+  }
+  #loop-viewport {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 8%, #000 92%, transparent 100%);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 8%, #000 92%, transparent 100%);
+  }
+
+  .loop-card {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: min(88vw, 460px);
+    height: clamp(130px, 20vw, 190px);
+    transform: translate3d(-50%, -9999px, 0);
+    border-radius: 1rem;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1px solid rgba(96, 165, 250, 0.18);
+    box-shadow: 0 0 0 rgba(96, 165, 250, 0);
+    transition: box-shadow 0.25s ease, border-color 0.25s ease;
+    background: #050505;
+    will-change: transform;
+  }
+  .loop-card.is-hovered {
+    border-color: rgba(96, 165, 250, 0.9);
+    box-shadow: 0 0 30px 3px rgba(29, 78, 216, 0.55), 0 0 70px 12px rgba(96, 165, 250, 0.22);
+  }
+  .loop-card .card-bg {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center;
+    filter: saturate(0.4) brightness(0.55);
+    transition: filter 0.3s ease;
+  }
+  .loop-card.is-hovered .card-bg { filter: saturate(0.6) brightness(0.7); }
+  .loop-card .card-fade {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.35) 55%, rgba(0,0,0,0.05) 100%);
+  }
+  .loop-card .card-label {
+    position: absolute;
+    left: 1.1rem;
+    bottom: 0.9rem;
+    right: 1.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .loop-card .card-title {
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    font-size: clamp(0.95rem, 2.4vw, 1.15rem);
+    color: #f5f8ff;
+  }
+  .loop-card .card-arrow {
+    color: #60a5fa;
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  .loop-card.is-hovered .card-arrow { opacity: 1; transform: translateX(0); }
+
+  /* ---------- Now-playing widget ---------- */
+  #now-playing {
+    position: fixed;
+    left: 50%;
+    bottom: 1.25rem;
+    transform: translate(-50%, 140%);
+    opacity: 0;
+    transition: transform 0.28s cubic-bezier(.2,.8,.2,1), opacity 0.2s ease;
+    pointer-events: none;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: #0a0a0a;
+    border: 1px solid rgba(96, 165, 250, 0.3);
+    border-radius: 0.75rem;
+    padding: 0.5rem 1rem 0.5rem 0.5rem;
+    box-shadow: 0 0 25px rgba(29, 78, 216, 0.3);
+  }
+  #now-playing-thumb {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 0.5rem;
+    background-size: cover;
+    background-position: center;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  #now-playing.visible {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+
+  /* ---------- Overlay expand card ---------- */
+  .expand-card {
+    position: fixed;
+    z-index: 50;
+    border-radius: 1rem;
+    overflow: hidden;
+    background: #000;
+    border: 1px solid rgba(96, 165, 250, 0.5);
+    box-shadow: 0 0 60px 8px rgba(29, 78, 216, 0.35);
+    transform-origin: 0 0;
+    will-change: transform;
+    transition: transform 0.6s cubic-bezier(.16,1,.3,1), border-radius 0.6s cubic-bezier(.16,1,.3,1);
+  }
+  .expand-card .expand-bg {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center;
+    transition: opacity 0.35s ease;
+  }
+  .expand-card iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    opacity: 0;
+    transition: opacity 0.35s ease;
+  }
+  .expand-card iframe.loaded { opacity: 1; }
+
+  #overlay-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: rgba(0,0,0,0.86);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+  #overlay-backdrop.visible { opacity: 1; pointer-events: auto; }
+
+  #close-btn {
+    position: fixed;
+    z-index: 55;
+    top: 1.5rem;
+    right: 1.5rem;
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 9999px;
+    background: rgba(0,0,0,0.7);
+    border: 1px solid rgba(96,165,250,0.5);
+    color: #60a5fa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transform: scale(0.8);
+    transition: opacity 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+    pointer-events: none;
+  }
+  #close-btn.visible { opacity: 1; transform: scale(1); pointer-events: auto; }
+  #close-btn:hover { box-shadow: 0 0 20px 3px rgba(96,165,250,0.5); border-color: #60a5fa; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .loop-card { transition: none; }
+    #now-playing, .expand-card, #overlay-backdrop, #close-btn { transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body class="bg-black text-white">
+
+  <!-- Minimal header -->
+  <header id="site-header" class="fixed top-0 left-0 right-0 z-30 flex items-center justify-between px-6 sm:px-10 py-5 pointer-events-none">
+    <span class="text-sm sm:text-base font-semibold tracking-[0.2em] uppercase text-white/90">
+      Portfolio
+    </span>
+    <span class="text-xs sm:text-sm text-neon-light/70 tracking-wide">scroll</span>
+  </header>
+
+  <!-- Infinite loop section -->
+  <main id="loop-section" class="relative h-screen w-full">
+    <div id="loop-viewport" class="absolute inset-0">
+      <!-- cards injected by JS -->
+    </div>
+  </main>
+
+  <!-- Spotify-style now playing widget -->
+  <div id="now-playing" class="flex items-center gap-3 bg-[#0a0a0a]/95 border border-neon-light/30 rounded-xl pl-2 pr-4 py-2 shadow-[0_0_25px_rgba(29,78,216,0.3)]">
+    <div id="now-playing-thumb" class="w-10 h-10 rounded-lg bg-cover bg-center flex-shrink-0 border border-white/10"></div>
+    <div class="flex flex-col leading-tight">
+      <span class="text-[10px] uppercase tracking-wider text-neon-light/80">Nu bekijken</span>
+      <span id="now-playing-name" class="text-sm font-medium text-white"></span>
+    </div>
+  </div>
+
+  <!-- Overlay backdrop + close button + expand card are created/positioned via JS -->
+  <div id="overlay-backdrop"></div>
+  <button id="close-btn" aria-label="Sluiten">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+      <line x1="4" y1="4" x2="20" y2="20"></line>
+      <line x1="20" y1="4" x2="4" y2="20"></line>
+    </svg>
+  </button>
+
+<script>
+(function () {
+  "use strict";
+
+  /* =====================================================
+     DATA — vervang hier later naam, thumbnail en live-URL
+     ===================================================== */
+  const PROJECTS = [
+    { name: "Website 1", thumbnail: placeholderThumb("Website 1"), url: "https://example.com" },
+    { name: "Website 2", thumbnail: placeholderThumb("Website 2"), url: "https://example.com" },
+    { name: "Website 3", thumbnail: placeholderThumb("Website 3"), url: "https://example.com" },
+    { name: "Website 4", thumbnail: placeholderThumb("Website 4"), url: "https://example.com" },
+    { name: "Website 5", thumbnail: placeholderThumb("Website 5"), url: "https://example.com" },
+  ];
+
+  function placeholderThumb(label) {
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="800" height="500">
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#0a0a0f"/>
+            <stop offset="100%" stop-color="#050505"/>
+          </linearGradient>
+        </defs>
+        <rect width="800" height="500" fill="url(#g)"/>
+        <rect x="1" y="1" width="798" height="498" fill="none" stroke="#1d4ed8" stroke-opacity="0.4" stroke-width="2"/>
+        <text x="50%" y="52%" font-family="Inter, sans-serif" font-size="46" font-weight="700"
+              fill="#60a5fa" text-anchor="middle" dominant-baseline="middle" letter-spacing="2">${label}</text>
+      </svg>`;
+    return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+  }
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* =====================================================
+     BUILD LOOP CARDS
+     ===================================================== */
+  const viewport = document.getElementById("loop-viewport");
+  const NUM_CARDS = 14;
+  const GAP = 56;
+
+  const cards = []; // { el, bgEl, dataIndex, baseY, scale, targetScale, hovered }
+
+  for (let i = 0; i < NUM_CARDS; i++) {
+    const dataIndex = i % PROJECTS.length;
+    const project = PROJECTS[dataIndex];
+
+    const el = document.createElement("div");
+    el.className = "loop-card";
+    el.innerHTML = `
+      <div class="card-bg" style="background-image:url('${project.thumbnail}')"></div>
+      <div class="card-fade"></div>
+      <div class="card-label">
+        <span class="card-title">${project.name}</span>
+        <span class="card-arrow">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 17L17 7"></path><path d="M9 7h8v8"></path>
+          </svg>
+        </span>
+      </div>
+    `;
+    viewport.appendChild(el);
+
+    const cardState = {
+      el,
+      dataIndex,
+      baseY: i * 1, // filled properly after measuring spacing
+      scale: 1,
+      targetScale: 1,
+      hovered: false,
+      indexInTrack: i,
+    };
+    cards.push(cardState);
+
+    el.addEventListener("pointerenter", () => onCardEnter(cardState));
+    el.addEventListener("pointerleave", () => onCardLeave(cardState));
+    el.addEventListener("click", () => openProject(cardState));
+  }
+
+  /* =====================================================
+     GEOMETRY
+     ===================================================== */
+  let cardHeight = 170;
+  let spacing = cardHeight + GAP;
+  let trackHeight = NUM_CARDS * spacing;
+  let containerHeight = window.innerHeight;
+  let centerOffset = trackHeight / 2 - containerHeight / 2;
+
+  function measure() {
+    const first = cards[0].el;
+    cardHeight = first.getBoundingClientRect().height || cardHeight;
+    spacing = cardHeight + GAP;
+    trackHeight = NUM_CARDS * spacing;
+    containerHeight = viewport.clientHeight;
+    centerOffset = trackHeight / 2 - containerHeight / 2;
+    cards.forEach((c, i) => { c.baseY = i * spacing; });
+  }
+
+  measure();
+  window.addEventListener("resize", debounce(measure, 150));
+
+  function debounce(fn, wait) {
+    let t;
+    return function (...args) {
+      clearTimeout(t);
+      t = setTimeout(() => fn.apply(this, args), wait);
+    };
+  }
+
+  /* =====================================================
+     MOTION STATE
+     ===================================================== */
+  const BASE_SPEED = 0.42;   // px per frame, rustig basistempo
+  const BOOST_GAIN = 2.4;
+  const MAX_BOOST = 20;
+  const BOOST_DECAY = 0.965;
+  const SPEED_EASE = 0.12;
+  const PROXIMITY_MARGIN = 140;
+
+  let virtualOffset = 0;
+  let currentSpeed = BASE_SPEED;
+  let boost = 0;
+  let paused = false; // true while overlay open
+
+  let lastPointerX = null, lastPointerY = null, lastPointerTime = 0;
+
+  window.addEventListener("pointermove", onPointerMove, { passive: true });
+
+  function onPointerMove(e) {
+    const now = performance.now();
+    const x = e.clientX, y = e.clientY;
+
+    if (lastPointerY !== null && !reduceMotion) {
+      const rect = viewport.getBoundingClientRect();
+      const near =
+        x >= rect.left - PROXIMITY_MARGIN && x <= rect.right + PROXIMITY_MARGIN &&
+        y >= rect.top - PROXIMITY_MARGIN && y <= rect.bottom + PROXIMITY_MARGIN;
+
+      const dt = Math.min(Math.max(now - lastPointerTime, 1), 80);
+      const dy = y - lastPointerY;
+
+      if (near && dy > 0) {
+        const instantPxPerFrame = (dy / dt) * 16.7;
+        const candidate = Math.min(instantPxPerFrame * BOOST_GAIN, MAX_BOOST);
+        boost = Math.max(boost, candidate);
+      }
+    }
+
+    lastPointerX = x;
+    lastPointerY = y;
+    lastPointerTime = now;
+  }
+
+  /* =====================================================
+     PER-CARD HOVER
+     ===================================================== */
+  function onCardEnter(card) {
+    card.hovered = true;
+    card.targetScale = 1.06;
+    card.el.classList.add("is-hovered");
+    showNowPlaying(PROJECTS[card.dataIndex]);
+  }
+  function onCardLeave(card) {
+    card.hovered = false;
+    card.targetScale = 1;
+    card.el.classList.remove("is-hovered");
+    hideNowPlaying();
+  }
+
+  /* =====================================================
+     NOW PLAYING WIDGET
+     ===================================================== */
+  const nowPlaying = document.getElementById("now-playing");
+  const nowPlayingThumb = document.getElementById("now-playing-thumb");
+  const nowPlayingName = document.getElementById("now-playing-name");
+
+  function showNowPlaying(project) {
+    nowPlayingThumb.style.backgroundImage = `url('${project.thumbnail}')`;
+    nowPlayingName.textContent = project.name;
+    nowPlaying.classList.add("visible");
+  }
+  function hideNowPlaying() {
+    nowPlaying.classList.remove("visible");
+  }
+
+  /* =====================================================
+     ANIMATION LOOP
+     ===================================================== */
+  const FRAME_MS = 1000 / 60; // baseline: BASE_SPEED / BOOST_DECAY / SPEED_EASE are tuned per 60fps frame
+  let lastFrameTime = null;
+
+  function tick(now) {
+    if (lastFrameTime === null) lastFrameTime = now;
+    const dt = Math.min(now - lastFrameTime, 100); // clamp to avoid huge jumps (tab backgrounded, etc.)
+    lastFrameTime = now;
+    const dtFactor = dt / FRAME_MS; // normalizes speed regardless of actual display refresh rate
+
+    boost *= Math.pow(BOOST_DECAY, dtFactor);
+    if (boost < 0.01) boost = 0;
+
+    const targetSpeed = BASE_SPEED + boost;
+    currentSpeed += (targetSpeed - currentSpeed) * (1 - Math.pow(1 - SPEED_EASE, dtFactor));
+
+    if (!paused) {
+      virtualOffset = (virtualOffset + currentSpeed * dtFactor) % trackHeight;
+    }
+
+    const scaleEase = 1 - Math.pow(1 - 0.22, dtFactor);
+    for (const c of cards) {
+      c.scale += (c.targetScale - c.scale) * scaleEase;
+
+      if (!paused) {
+        let y = (c.baseY + virtualOffset) % trackHeight;
+        if (y < 0) y += trackHeight;
+        y -= centerOffset;
+        c.el.style.transform = `translate3d(-50%, ${y}px, 0) scale(${c.scale})`;
+      } else {
+        c.el.style.transform = c.el.style.transform.replace(/scale\([^)]*\)/, `scale(${c.scale})`);
+      }
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  if (reduceMotion) {
+    // Lay cards out in a simple static stack, still hoverable/clickable, no continuous animation.
+    measure();
+    let y = 40;
+    for (const c of cards.slice(0, PROJECTS.length)) {
+      c.el.style.transform = `translate3d(-50%, ${y}px, 0) scale(1)`;
+      y += spacing;
+    }
+    cards.slice(PROJECTS.length).forEach(c => { c.el.style.display = "none"; });
+  } else {
+    requestAnimationFrame(tick);
+  }
+
+  /* =====================================================
+     CLICK-TO-EXPAND OVERLAY
+     ===================================================== */
+  const backdrop = document.getElementById("overlay-backdrop");
+  const closeBtn = document.getElementById("close-btn");
+
+  let overlayOpen = false;
+  let activeExpandCard = null;
+  let activeSourceCard = null;
+  let activeFromTransform = "";
+  let wheelAccum = 0;
+
+  function openProject(card) {
+    if (overlayOpen) return;
+    overlayOpen = true;
+    paused = true;
+    activeSourceCard = card;
+
+    const project = PROJECTS[card.dataIndex];
+    const sourceRect = card.el.getBoundingClientRect();
+    card.el.style.visibility = "hidden";
+
+    const margin = Math.min(window.innerWidth, window.innerHeight) * 0.045;
+    const targetRect = {
+      left: margin,
+      top: margin,
+      width: window.innerWidth - margin * 2,
+      height: window.innerHeight - margin * 2,
+    };
+
+    // Position/size the overlay at its FINAL (near-fullscreen) box once, then use a
+    // GPU-accelerated transform to make it start out looking exactly like the source
+    // card and animate to identity — no left/top/width/height ever get animated.
+    const scaleX = sourceRect.width / targetRect.width;
+    const scaleY = sourceRect.height / targetRect.height;
+    const tx = sourceRect.left - targetRect.left;
+    const ty = sourceRect.top - targetRect.top;
+    activeFromTransform = `translate3d(${tx}px, ${ty}px, 0) scale(${scaleX}, ${scaleY})`;
+
+    const expand = document.createElement("div");
+    expand.className = "expand-card";
+    expand.style.left = targetRect.left + "px";
+    expand.style.top = targetRect.top + "px";
+    expand.style.width = targetRect.width + "px";
+    expand.style.height = targetRect.height + "px";
+    expand.style.borderRadius = "1rem";
+    expand.style.transition = "none";
+    expand.style.transform = activeFromTransform;
+    expand.innerHTML = `
+      <div class="expand-bg" style="background-image:url('${project.thumbnail}')"></div>
+      <iframe title="${project.name}" loading="lazy"></iframe>
+    `;
+    document.body.appendChild(expand);
+    void expand.offsetWidth; // commit the "from" transform before re-enabling transitions
+    expand.style.transition = "";
+    activeExpandCard = expand;
+
+    backdrop.classList.add("visible");
+
+    requestAnimationFrame(() => {
+      expand.style.transform = "translate3d(0, 0, 0) scale(1, 1)";
+      expand.style.borderRadius = "1.25rem";
+    });
+
+    const onDone = () => {
+      expand.removeEventListener("transitionend", onDone);
+      const iframe = expand.querySelector("iframe");
+      iframe.addEventListener("load", () => iframe.classList.add("loaded"), { once: true });
+      iframe.src = project.url;
+      closeBtn.classList.add("visible");
+    };
+    expand.addEventListener("transitionend", onDone);
+
+    backdrop.addEventListener("wheel", onBackdropWheel, { passive: true });
+    document.addEventListener("keydown", onKeyDown);
+  }
+
+  function onBackdropWheel(e) {
+    if (e.deltaY <= 0) { wheelAccum = 0; return; }
+    wheelAccum += e.deltaY;
+    if (wheelAccum > 260) {
+      wheelAccum = 0;
+      closeProject();
+    }
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Escape") closeProject();
+  }
+
+  function closeProject() {
+    if (!overlayOpen || !activeExpandCard) return;
+    overlayOpen = false;
+
+    const expand = activeExpandCard;
+    const card = activeSourceCard;
+
+    closeBtn.classList.remove("visible");
+    backdrop.classList.remove("visible");
+    backdrop.removeEventListener("wheel", onBackdropWheel);
+    document.removeEventListener("keydown", onKeyDown);
+
+    const iframe = expand.querySelector("iframe");
+    iframe.classList.remove("loaded");
+
+    expand.style.transform = activeFromTransform;
+    expand.style.borderRadius = "1rem";
+
+    const onDone = () => {
+      expand.removeEventListener("transitionend", onDone);
+      expand.remove();
+      card.el.style.visibility = "visible";
+      paused = false;
+      activeExpandCard = null;
+      activeSourceCard = null;
+    };
+    expand.addEventListener("transitionend", onDone);
+  }
+
+  closeBtn.addEventListener("click", closeProject);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closeProject();
+  });
+})();
+</script>
+</body>
+</html>
