@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/motion@latest/dist/motion.js"></script>
 <script>
   tailwind.config = {
     theme: {
@@ -54,25 +55,28 @@
     mask-image: linear-gradient(to bottom, transparent 0, #000 8%, #000 92%, transparent 100%);
   }
 
-  .loop-card {
+  /* Position (loop) and hover (Motion) are split across two elements so the
+     continuous per-frame translateY write and Motion's spring-driven scale/glow
+     never fight over the same element's transform/inline styles. */
+  .loop-card-slot {
     position: absolute;
     left: 50%;
     top: 0;
     width: min(88vw, 460px);
     height: clamp(130px, 20vw, 190px);
     transform: translate3d(-50%, -9999px, 0);
+    will-change: transform;
+  }
+  .loop-card {
+    position: relative;
+    width: 100%;
+    height: 100%;
     border-radius: 1rem;
     overflow: hidden;
     cursor: pointer;
     border: 1px solid rgba(96, 165, 250, 0.18);
-    box-shadow: 0 0 0 rgba(96, 165, 250, 0);
-    transition: box-shadow 0.25s ease, border-color 0.25s ease;
+    box-shadow: 0 0 0px 0px rgba(29, 78, 216, 0), 0 0 0px 0px rgba(96, 165, 250, 0);
     background: #050505;
-    will-change: transform;
-  }
-  .loop-card.is-hovered {
-    border-color: rgba(96, 165, 250, 0.9);
-    box-shadow: 0 0 30px 3px rgba(29, 78, 216, 0.55), 0 0 70px 12px rgba(96, 165, 250, 0.22);
   }
   .loop-card .card-bg {
     position: absolute;
@@ -212,7 +216,7 @@
   #close-btn:hover { box-shadow: 0 0 20px 3px rgba(96,165,250,0.5); border-color: #60a5fa; }
 
   @media (prefers-reduced-motion: reduce) {
-    .loop-card { transition: none; }
+    .loop-card .card-bg, .loop-card .card-arrow { transition: none; }
     #now-playing, .expand-card, #overlay-backdrop, #close-btn { transition-duration: 0.01ms !important; }
   }
 </style>
@@ -293,11 +297,14 @@
   const NUM_CARDS = 14;
   const GAP = 56;
 
-  const cards = []; // { el, bgEl, dataIndex, baseY, scale, targetScale, hovered }
+  const cards = []; // { slotEl, el, dataIndex, baseY, hoverAnim }
 
   for (let i = 0; i < NUM_CARDS; i++) {
     const dataIndex = i % PROJECTS.length;
     const project = PROJECTS[dataIndex];
+
+    const slotEl = document.createElement("div");
+    slotEl.className = "loop-card-slot";
 
     const el = document.createElement("div");
     el.className = "loop-card";
@@ -313,15 +320,15 @@
         </span>
       </div>
     `;
-    viewport.appendChild(el);
+    slotEl.appendChild(el);
+    viewport.appendChild(slotEl);
 
     const cardState = {
+      slotEl,
       el,
       dataIndex,
       baseY: i * 1, // filled properly after measuring spacing
-      scale: 1,
-      targetScale: 1,
-      hovered: false,
+      hoverAnim: null,
       indexInTrack: i,
     };
     cards.push(cardState);
@@ -341,7 +348,7 @@
   let centerOffset = trackHeight / 2 - containerHeight / 2;
 
   function measure() {
-    const first = cards[0].el;
+    const first = cards[0].slotEl;
     cardHeight = first.getBoundingClientRect().height || cardHeight;
     spacing = cardHeight + GAP;
     trackHeight = NUM_CARDS * spacing;
@@ -362,32 +369,67 @@
   }
 
   /* =====================================================
-     MOTION STATE
+     MOTION (vanilla, via CDN — https://motion.dev)
+     Used for: (1) the loop's speed easing in response to cursor drag,
+     and (2) each card's hover scale + glow. Guarded so the page still
+     works fully (just without the spring polish) if the CDN is slow/blocked.
      ===================================================== */
-  const BASE_SPEED = 0.42;   // px per frame, rustig basistempo
+  const M = window.Motion;
+  function safeAnimate(target, keyframes, options) {
+    if (!M || typeof M.animate !== "function") {
+      applyStylesInstantly(target, keyframes); // no-Motion fallback: snap instead of animate
+      return null;
+    }
+    try {
+      return M.animate(target, keyframes, options);
+    } catch (err) {
+      applyStylesInstantly(target, keyframes);
+      return null;
+    }
+  }
+  function applyStylesInstantly(target, keyframes) {
+    if (!(target instanceof Element)) return; // plain-object targets (e.g. the speed value) handle their own fallback
+    for (const key in keyframes) {
+      const value = keyframes[key];
+      target.style[key] = Array.isArray(value) ? value[value.length - 1] : value;
+    }
+  }
+
+  /* =====================================================
+     LOOP SPEED — eased via a Motion spring on a plain value
+     ===================================================== */
+  const BASE_SPEED = 0.42;   // px per frame @60fps, rustig basistempo
   const BOOST_GAIN = 2.4;
   const MAX_BOOST = 20;
-  const BOOST_DECAY = 0.965;
-  const SPEED_EASE = 0.12;
   const PROXIMITY_MARGIN = 140;
+  const CATCH_SPRING = { type: "spring", stiffness: 260, damping: 30, restSpeed: 0.01 };
+  const RELEASE_SPRING = { type: "spring", stiffness: 35, damping: 12, restSpeed: 0.01 };
+  const IDLE_MS = 90; // grace period after the last qualifying drag before easing back down
 
+  const speed = { value: BASE_SPEED };
+  let speedAnim = null;
+  let idleTimer = null;
   let virtualOffset = 0;
-  let currentSpeed = BASE_SPEED;
-  let boost = 0;
   let paused = false; // true while overlay open
 
-  let lastPointerX = null, lastPointerY = null, lastPointerTime = 0;
+  function retargetSpeed(target, springConfig) {
+    speedAnim?.stop();
+    speedAnim = safeAnimate(speed, { value: target }, springConfig);
+    if (!speedAnim) speed.value = target; // no-Motion fallback: snap instead of spring
+  }
+
+  let lastPointerY = null, lastPointerTime = 0;
 
   window.addEventListener("pointermove", onPointerMove, { passive: true });
 
   function onPointerMove(e) {
     const now = performance.now();
-    const x = e.clientX, y = e.clientY;
+    const y = e.clientY;
 
     if (lastPointerY !== null && !reduceMotion) {
       const rect = viewport.getBoundingClientRect();
       const near =
-        x >= rect.left - PROXIMITY_MARGIN && x <= rect.right + PROXIMITY_MARGIN &&
+        e.clientX >= rect.left - PROXIMITY_MARGIN && e.clientX <= rect.right + PROXIMITY_MARGIN &&
         y >= rect.top - PROXIMITY_MARGIN && y <= rect.bottom + PROXIMITY_MARGIN;
 
       const dt = Math.min(Math.max(now - lastPointerTime, 1), 80);
@@ -395,29 +437,42 @@
 
       if (near && dy > 0) {
         const instantPxPerFrame = (dy / dt) * 16.7;
-        const candidate = Math.min(instantPxPerFrame * BOOST_GAIN, MAX_BOOST);
-        boost = Math.max(boost, candidate);
+        const target = BASE_SPEED + Math.min(instantPxPerFrame * BOOST_GAIN, MAX_BOOST);
+        retargetSpeed(target, CATCH_SPRING);
+
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => retargetSpeed(BASE_SPEED, RELEASE_SPRING), IDLE_MS);
       }
     }
 
-    lastPointerX = x;
     lastPointerY = y;
     lastPointerTime = now;
   }
 
   /* =====================================================
-     PER-CARD HOVER
+     PER-CARD HOVER — scale + glow eased via Motion spring
      ===================================================== */
+  const HOVER_ENTER_SPRING = { type: "spring", stiffness: 300, damping: 24 };
+  const HOVER_LEAVE_SPRING = { type: "spring", stiffness: 300, damping: 28 };
+
   function onCardEnter(card) {
-    card.hovered = true;
-    card.targetScale = 1.06;
     card.el.classList.add("is-hovered");
+    card.hoverAnim?.stop();
+    card.hoverAnim = safeAnimate(card.el, {
+      scale: 1.06,
+      boxShadow: "0 0 30px 3px rgba(29,78,216,0.55), 0 0 70px 12px rgba(96,165,250,0.22)",
+      borderColor: "rgba(96,165,250,0.9)",
+    }, HOVER_ENTER_SPRING);
     showNowPlaying(PROJECTS[card.dataIndex]);
   }
   function onCardLeave(card) {
-    card.hovered = false;
-    card.targetScale = 1;
     card.el.classList.remove("is-hovered");
+    card.hoverAnim?.stop();
+    card.hoverAnim = safeAnimate(card.el, {
+      scale: 1,
+      boxShadow: "0 0 0px 0px rgba(29,78,216,0), 0 0 0px 0px rgba(96,165,250,0)",
+      borderColor: "rgba(96,165,250,0.18)",
+    }, HOVER_LEAVE_SPRING);
     hideNowPlaying();
   }
 
@@ -438,9 +493,10 @@
   }
 
   /* =====================================================
-     ANIMATION LOOP
+     ANIMATION LOOP — advances position using speed.value, which Motion's
+     spring animations above continuously ease toward their target.
      ===================================================== */
-  const FRAME_MS = 1000 / 60; // baseline: BASE_SPEED / BOOST_DECAY / SPEED_EASE are tuned per 60fps frame
+  const FRAME_MS = 1000 / 60; // baseline: BASE_SPEED is tuned per 60fps frame
   let lastFrameTime = null;
 
   function tick(now) {
@@ -449,27 +505,14 @@
     lastFrameTime = now;
     const dtFactor = dt / FRAME_MS; // normalizes speed regardless of actual display refresh rate
 
-    boost *= Math.pow(BOOST_DECAY, dtFactor);
-    if (boost < 0.01) boost = 0;
-
-    const targetSpeed = BASE_SPEED + boost;
-    currentSpeed += (targetSpeed - currentSpeed) * (1 - Math.pow(1 - SPEED_EASE, dtFactor));
-
     if (!paused) {
-      virtualOffset = (virtualOffset + currentSpeed * dtFactor) % trackHeight;
-    }
+      virtualOffset = (virtualOffset + speed.value * dtFactor) % trackHeight;
 
-    const scaleEase = 1 - Math.pow(1 - 0.22, dtFactor);
-    for (const c of cards) {
-      c.scale += (c.targetScale - c.scale) * scaleEase;
-
-      if (!paused) {
+      for (const c of cards) {
         let y = (c.baseY + virtualOffset) % trackHeight;
         if (y < 0) y += trackHeight;
         y -= centerOffset;
-        c.el.style.transform = `translate3d(-50%, ${y}px, 0) scale(${c.scale})`;
-      } else {
-        c.el.style.transform = c.el.style.transform.replace(/scale\([^)]*\)/, `scale(${c.scale})`);
+        c.slotEl.style.transform = `translate3d(-50%, ${y}px, 0)`;
       }
     }
 
@@ -481,10 +524,10 @@
     measure();
     let y = 40;
     for (const c of cards.slice(0, PROJECTS.length)) {
-      c.el.style.transform = `translate3d(-50%, ${y}px, 0) scale(1)`;
+      c.slotEl.style.transform = `translate3d(-50%, ${y}px, 0)`;
       y += spacing;
     }
-    cards.slice(PROJECTS.length).forEach(c => { c.el.style.display = "none"; });
+    cards.slice(PROJECTS.length).forEach(c => { c.slotEl.style.display = "none"; });
   } else {
     requestAnimationFrame(tick);
   }
@@ -510,6 +553,16 @@
     const project = PROJECTS[card.dataIndex];
     const sourceRect = card.el.getBoundingClientRect();
     card.el.style.visibility = "hidden";
+
+    // Reset hover scale/glow instantly so the card looks neutral again once
+    // it's revealed on close (a click doesn't fire pointerleave).
+    card.hoverAnim?.stop();
+    card.hoverAnim = safeAnimate(card.el, {
+      scale: 1,
+      boxShadow: "0 0 0px 0px rgba(29,78,216,0), 0 0 0px 0px rgba(96,165,250,0)",
+      borderColor: "rgba(96,165,250,0.18)",
+    }, { duration: 0 });
+    card.el.classList.remove("is-hovered");
 
     const margin = Math.min(window.innerWidth, window.innerHeight) * 0.045;
     const targetRect = {
