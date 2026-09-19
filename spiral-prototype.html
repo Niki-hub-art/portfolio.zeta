@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spiraal Prototype</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  #scene-container { position: fixed; inset: 0; }
+  #scene-container canvas { display: block; width: 100%; height: 100%; }
+  #hint {
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    color: #60a5fa;
+    font-family: system-ui, sans-serif;
+    font-size: 0.8rem;
+    opacity: 0.6;
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+<div id="scene-container"></div>
+<div id="hint">beweeg cursor omhoog / omlaag</div>
+<script type="module">
+import * as THREE from "three";
+
+/* =====================================================
+   DATA — 5 placeholder kaartjes
+   ===================================================== */
+function placeholderThumb(label) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 400;
+  canvas.height = 440;
+  const ctx = canvas.getContext("2d");
+  const grad = ctx.createLinearGradient(0, 0, 400, 440);
+  grad.addColorStop(0, "#0a0a0f");
+  grad.addColorStop(1, "#050505");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 400, 440);
+  ctx.strokeStyle = "rgba(29,78,216,0.6)";
+  ctx.lineWidth = 6;
+  ctx.strokeRect(3, 3, 394, 434);
+  ctx.fillStyle = "#60a5fa";
+  ctx.font = "bold 34px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, 200, 220);
+  return canvas;
+}
+
+const PROJECTS = ["Website 1", "Website 2", "Website 3", "Website 4", "Website 5"]
+  .map((name) => ({ name, canvas: placeholderThumb(name) }));
+
+/* =====================================================
+   SCENE SETUP
+   ===================================================== */
+const container = document.getElementById("scene-container");
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
+camera.position.set(0, 0.5, 14);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(container.clientWidth, container.clientHeight);
+container.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0x223355, 1.6));
+const keyLight = new THREE.DirectionalLight(0x8fb4ff, 1.0);
+keyLight.position.set(3, 5, 6);
+scene.add(keyLight);
+
+/* =====================================================
+   SPIRAL PARAMETERS
+   De kaartjes draaien om een onzichtbare verticale as (geen
+   zichtbare cilinder/buis) en bewegen tegelijk verticaal —
+   een echte helix, geen platte kolom.
+   ===================================================== */
+const RADIUS = 3.0;                 // afstand van de kaartjes tot de centrale as
+const CARD_WIDTH = 0.55, CARD_HEIGHT = 0.6; // bijna-vierkant
+const NUM_VISIBLE_TURNS = 3;        // hele getal -> naadloze hoek-wrap
+const LOOP_HEIGHT = 32;             // modulo-periode (wereld-eenheden)
+const NUM_CARD_SLOTS = 36;          // aantal kaartjes dat de 5 projecten herhaalt
+const CARD_SPACING = LOOP_HEIGHT / NUM_CARD_SLOTS;
+const ANGULAR_RATE = (2 * Math.PI * NUM_VISIBLE_TURNS) / LOOP_HEIGHT;
+
+const cardGeo = new THREE.PlaneGeometry(CARD_WIDTH, CARD_HEIGHT);
+const cards = [];
+
+for (let i = 0; i < NUM_CARD_SLOTS; i++) {
+  const project = PROJECTS[i % PROJECTS.length];
+  const texture = new THREE.CanvasTexture(project.canvas);
+  texture.needsUpdate = true;
+
+  const mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true });
+  const mesh = new THREE.Mesh(cardGeo, mat);
+  scene.add(mesh);
+
+  cards.push({ mesh, mat, baseT: i * CARD_SPACING, project });
+}
+
+function layoutCards(phase) {
+  for (const c of cards) {
+    let t = (c.baseT + phase) % LOOP_HEIGHT;
+    if (t < 0) t += LOOP_HEIGHT;
+    t -= LOOP_HEIGHT / 2; // centreer het wrap-bereik rond 0 (wrap-punt blijft buiten beeld)
+
+    const angle = t * ANGULAR_RATE;
+    const x = RADIUS * Math.sin(angle);
+    const z = RADIUS * Math.cos(angle);
+    const y = t;
+
+    c.mesh.position.set(x, y, z);
+    c.mesh.rotation.set(0, angle, 0); // naar buiten gericht, weg van de centrale as
+
+    const depthFacing = (z + RADIUS) / (2 * RADIUS); // 0..1, 1 = dichtst bij camera
+    c.mat.opacity = THREE.MathUtils.lerp(0.3, 1, depthFacing);
+  }
+}
+
+/* =====================================================
+   CURSOR-BESTURING — directe controle, beperkte maximumsnelheid,
+   stopt VOLLEDIG zodra de cursor stilstaat (geen autonome beweging,
+   geen restbeweging na loslaten). Fase verandert uitsluitend binnen
+   een echte pointermove-event — er is geen frame-voor-frame "backlog"
+   die nog naloopt nadat de cursor is gestopt.
+   ===================================================== */
+const PIXELS_TO_WORLD = 0.03;
+const FRAME_MS = 1000 / 60;
+const MAX_SPEED = 0.4;  // wereld-eenheden fase per 60fps-frame-equivalent — harde cap per event
+
+let phase = 0;
+let lastPointerY = null;
+let lastPointerTime = 0;
+
+window.addEventListener("pointermove", (e) => {
+  const now = performance.now();
+  if (lastPointerY !== null) {
+    const dt = Math.min(Math.max(now - lastPointerTime, 1), 100);
+    const dy = e.clientY - lastPointerY; // omlaag = positief
+    const rawStep = -dy * PIXELS_TO_WORLD;
+    const maxStep = MAX_SPEED * (dt / FRAME_MS);
+    phase += THREE.MathUtils.clamp(rawStep, -maxStep, maxStep);
+  }
+  lastPointerY = e.clientY;
+  lastPointerTime = now;
+}, { passive: true });
+
+/* =====================================================
+   RENDER LOOP — herrendert continu (voor toekomstige hover-polish),
+   maar de fase zelf beweegt alleen via de pointermove-handler hierboven.
+   ===================================================== */
+function tick() {
+  layoutCards(phase);
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+layoutCards(phase);
+requestAnimationFrame(tick);
+
+window.addEventListener("resize", () => {
+  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+});
+</script>
+</body>
+</html>
