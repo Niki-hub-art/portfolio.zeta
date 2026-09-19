@@ -68,7 +68,7 @@ const container = document.getElementById("scene-container");
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
-camera.position.set(0, 0.5, 19);
+camera.position.set(0, 0.5, 25);
 camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -87,11 +87,11 @@ scene.add(keyLight);
    zichtbare cilinder/buis) en bewegen tegelijk verticaal —
    een echte helix, geen platte kolom.
    ===================================================== */
-const RADIUS = 7.6;                 // afstand van de kaartjes tot de centrale as
-const CARD_WIDTH = 1.7, CARD_HEIGHT = 1.02; // breed rechthoekig, geen vierkant
+const RADIUS = 13;                  // afstand van de kaartjes tot de centrale as
+const CARD_WIDTH = 2.9, CARD_HEIGHT = 1.74; // breed rechthoekig, geen vierkant — fors groter
 const NUM_VISIBLE_TURNS = 3;        // hele getal -> naadloze hoek-wrap
-const LOOP_HEIGHT = 54;             // modulo-periode (wereld-eenheden)
-const NUM_CARD_SLOTS = 27;          // aantal kaartjes dat de 5 projecten herhaalt (compacter dan voorheen)
+const LOOP_HEIGHT = 92;             // modulo-periode (wereld-eenheden)
+const NUM_CARD_SLOTS = 27;          // aantal kaartjes dat de 5 projecten herhaalt (minder tegelijk zichtbaar, en dat mag)
 const CARD_SPACING = LOOP_HEIGHT / NUM_CARD_SLOTS;
 const ANGULAR_RATE = (2 * Math.PI * NUM_VISIBLE_TURNS) / LOOP_HEIGHT;
 
@@ -151,37 +151,39 @@ function layoutCards(phase) {
 
 /* =====================================================
    BEWEGING — doorlopende, autonome rotatie die nooit vanzelf stopt
-   (rustig basistempo), met een tijdelijke versnelling wanneer de cursor
-   in dezelfde richting meebeweegt — exact hetzelfde patroon als de
-   oorspronkelijke verticale lus, nu toegepast op de fase van de spiraal.
+   (rustig basistempo, ONGEWIJZIGD), met een tijdelijke versnelling
+   wanneer de cursor in dezelfde richting meebeweegt.
+
+   De cursorsnelheid wordt per RENDERFRAME geschat (nooit per los
+   pointermove-event) — een event-to-event tijdsverschil kan toevallig
+   heel klein zijn, wat de oude per-event (dy/dt)-schatting soms liet
+   pieken en zo een abrupte sprong gaf. Door ruwe pixels te accumuleren
+   en pas één keer per frame om te rekenen naar een snelheid, en die
+   vervolgens door twee lagen vloeiende demping te halen (snelheid ->
+   boost -> tempo), is de opbouw altijd een continue curve zonder
+   sprongen, met een duidelijk lager maximum dan voorheen.
    ===================================================== */
 const FRAME_MS = 1000 / 60;
-const BASE_SPEED = 0.0075;   // fase-eenheden per 60fps-frame — rustig, doorlopend basistempo
-const BOOST_GAIN = 0.043;
-const MAX_BOOST = 0.38;
-const BOOST_DECAY = 0.965;
-const SPEED_EASE = 0.12;
+const BASE_SPEED = 0.0075;   // fase-eenheden per 60fps-frame — rustig, doorlopend basistempo (ongewijzigd)
+const BOOST_GAIN = 0.01;
+const MAX_BOOST = 0.16;      // duidelijk lager dan voorheen (was 0.38)
+const VELOCITY_EASE = 0.2;   // vloeit de ruwe pixels/frame-schatting glad
+const BOOST_EASE = 0.1;      // vloeit de boost geleidelijk naar zijn doelwaarde (op- én afbouw)
+const SPEED_EASE = 0.12;     // vloeit het uiteindelijke tempo (ongewijzigd)
 
 let phase = 0;
 let currentSpeed = BASE_SPEED;
 let boost = 0;
+let velocitySmoothed = 0;
+let pendingPixels = 0; // ruwe omlaag-beweging sinds het laatst gerenderde frame
 let lastPointerY = null;
-let lastPointerTime = 0;
 
 window.addEventListener("pointermove", (e) => {
-  const now = performance.now();
-  const y = e.clientY;
   if (lastPointerY !== null) {
-    const dt = Math.min(Math.max(now - lastPointerTime, 1), 80);
-    const dy = y - lastPointerY;
-    if (dy > 0) { // cursor beweegt omlaag, zelfde richting als de autonome rotatie -> versnelling
-      const instantPxPerFrame = (dy / dt) * 16.7;
-      const candidate = Math.min(instantPxPerFrame * BOOST_GAIN, MAX_BOOST);
-      boost = Math.max(boost, candidate);
-    }
+    const dy = e.clientY - lastPointerY; // omlaag = positief
+    if (dy > 0) pendingPixels += dy; // enkel accumuleren — geen timing/snelheid hier
   }
-  lastPointerY = y;
-  lastPointerTime = now;
+  lastPointerY = e.clientY;
 }, { passive: true });
 
 /* =====================================================
@@ -217,8 +219,17 @@ function tick(now) {
   lastFrameTime = now;
   const dtFactor = dt / FRAME_MS;
 
-  boost *= Math.pow(BOOST_DECAY, dtFactor);
-  if (boost < 0.0001) boost = 0;
+  // Eén snelheids-schatting per frame (pixels per 60fps-frame-equivalent),
+  // niet per event — dit is wat de vorige abrupte sprong voorkomt.
+  const pixelsThisFrame = dtFactor > 0 ? pendingPixels / dtFactor : 0;
+  pendingPixels = 0;
+
+  const velocityEaseFactor = 1 - Math.pow(1 - VELOCITY_EASE, dtFactor);
+  velocitySmoothed += (pixelsThisFrame - velocitySmoothed) * velocityEaseFactor;
+
+  const boostTarget = Math.min(velocitySmoothed * BOOST_GAIN, MAX_BOOST);
+  const boostEaseFactor = 1 - Math.pow(1 - BOOST_EASE, dtFactor);
+  boost += (boostTarget - boost) * boostEaseFactor;
 
   const targetSpeed = BASE_SPEED + boost;
   currentSpeed += (targetSpeed - currentSpeed) * (1 - Math.pow(1 - SPEED_EASE, dtFactor));
