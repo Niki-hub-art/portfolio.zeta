@@ -37,23 +37,24 @@ import * as THREE from "three";
    DATA — 5 placeholder kaartjes
    ===================================================== */
 function placeholderThumb(label) {
+  const W = 480, H = 288; // breed rechthoekig, matcht de kaartjes-verhouding
   const canvas = document.createElement("canvas");
-  canvas.width = 400;
-  canvas.height = 440;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext("2d");
-  const grad = ctx.createLinearGradient(0, 0, 400, 440);
+  const grad = ctx.createLinearGradient(0, 0, W, H);
   grad.addColorStop(0, "#0a0a0f");
   grad.addColorStop(1, "#050505");
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 400, 440);
+  ctx.fillRect(0, 0, W, H);
   ctx.strokeStyle = "rgba(29,78,216,0.6)";
   ctx.lineWidth = 6;
-  ctx.strokeRect(3, 3, 394, 434);
+  ctx.strokeRect(3, 3, W - 6, H - 6);
   ctx.fillStyle = "#60a5fa";
   ctx.font = "bold 34px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(label, 200, 220);
+  ctx.fillText(label, W / 2, H / 2);
   return canvas;
 }
 
@@ -67,7 +68,7 @@ const container = document.getElementById("scene-container");
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
-camera.position.set(0, 0.5, 14);
+camera.position.set(0, 0.5, 19);
 camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -86,13 +87,18 @@ scene.add(keyLight);
    zichtbare cilinder/buis) en bewegen tegelijk verticaal —
    een echte helix, geen platte kolom.
    ===================================================== */
-const RADIUS = 3.0;                 // afstand van de kaartjes tot de centrale as
-const CARD_WIDTH = 0.55, CARD_HEIGHT = 0.6; // bijna-vierkant
+const RADIUS = 6.5;                 // afstand van de kaartjes tot de centrale as
+const CARD_WIDTH = 1.3, CARD_HEIGHT = 0.78; // breed rechthoekig, geen vierkant
 const NUM_VISIBLE_TURNS = 3;        // hele getal -> naadloze hoek-wrap
-const LOOP_HEIGHT = 32;             // modulo-periode (wereld-eenheden)
-const NUM_CARD_SLOTS = 36;          // aantal kaartjes dat de 5 projecten herhaalt
+const LOOP_HEIGHT = 66;             // modulo-periode (wereld-eenheden)
+const NUM_CARD_SLOTS = 22;          // aantal kaartjes dat de 5 projecten herhaalt
 const CARD_SPACING = LOOP_HEIGHT / NUM_CARD_SLOTS;
 const ANGULAR_RATE = (2 * Math.PI * NUM_VISIBLE_TURNS) / LOOP_HEIGHT;
+
+// Hoe dicht een kaartje qua hoek bij "vooraan" (angle 0) moet zijn om
+// het extra focus-vergroting te krijgen, en hoeveel groter het dan wordt.
+const FOCUS_WINDOW = ANGULAR_RATE * CARD_SPACING * 1.6;
+const FOCUS_SCALE_BOOST = 0.4; // het kaartje vooraan wordt tot 1.4x zo groot
 
 const cardGeo = new THREE.PlaneGeometry(CARD_WIDTH, CARD_HEIGHT);
 const cards = [];
@@ -109,6 +115,14 @@ for (let i = 0; i < NUM_CARD_SLOTS; i++) {
   cards.push({ mesh, mat, baseT: i * CARD_SPACING, project });
 }
 
+// Hoek genormaliseerd naar [-PI, PI], zodat "afstand tot vooraan" altijd de
+// kortste weg neemt (nodig voor zowel de focus-vergroting als de snap).
+function normalizedAngle(angle) {
+  let a = ((angle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  if (a > Math.PI) a -= 2 * Math.PI;
+  return a;
+}
+
 function layoutCards(phase) {
   for (const c of cards) {
     let t = (c.baseT + phase) % LOOP_HEIGHT;
@@ -116,32 +130,69 @@ function layoutCards(phase) {
     t -= LOOP_HEIGHT / 2; // centreer het wrap-bereik rond 0 (wrap-punt blijft buiten beeld)
 
     const angle = t * ANGULAR_RATE;
+    const normAngle = normalizedAngle(angle);
     const x = RADIUS * Math.sin(angle);
     const z = RADIUS * Math.cos(angle);
     const y = t;
 
+    // Focus-vergroting: vloeiende (smoothstep) opleving naar 1 exact vooraan.
+    const focusT = THREE.MathUtils.clamp(1 - Math.abs(normAngle) / FOCUS_WINDOW, 0, 1);
+    const focusAmount = focusT * focusT * (3 - 2 * focusT);
+    const scale = 1 + focusAmount * FOCUS_SCALE_BOOST;
+
     c.mesh.position.set(x, y, z);
     c.mesh.rotation.set(0, angle, 0); // naar buiten gericht, weg van de centrale as
+    c.mesh.scale.set(scale, scale, 1);
 
     const depthFacing = (z + RADIUS) / (2 * RADIUS); // 0..1, 1 = dichtst bij camera
     c.mat.opacity = THREE.MathUtils.lerp(0.3, 1, depthFacing);
   }
 }
 
+// Zoekt, voor de huidige fase, welk kaartje qua hoek het dichtst bij
+// "vooraan" staat en levert de fase-waarde die dat kaartje exact daar
+// zou zetten (via de kortste hoek-weg) — het doel van de snap-animatie.
+function findSnapTarget(currentPhase) {
+  let bestAngle = Infinity;
+  for (const c of cards) {
+    let t = (c.baseT + currentPhase) % LOOP_HEIGHT;
+    if (t < 0) t += LOOP_HEIGHT;
+    t -= LOOP_HEIGHT / 2;
+    const angle = normalizedAngle(t * ANGULAR_RATE);
+    if (Math.abs(angle) < Math.abs(bestAngle)) bestAngle = angle;
+  }
+  return currentPhase - bestAngle / ANGULAR_RATE;
+}
+
 /* =====================================================
-   CURSOR-BESTURING — directe controle, beperkte maximumsnelheid,
-   stopt VOLLEDIG zodra de cursor stilstaat (geen autonome beweging,
-   geen restbeweging na loslaten). Fase verandert uitsluitend binnen
-   een echte pointermove-event — er is geen frame-voor-frame "backlog"
-   die nog naloopt nadat de cursor is gestopt.
+   CURSOR-BESTURING — directe, fijngevoelige controle. Fase verandert
+   uitsluitend binnen een echte pointermove-event (geen frame-voor-frame
+   "backlog" die naloopt). Zodra de cursor een korte tijd stilstaat, draait
+   de spiraal vanzelf zachtjes bij tot het dichtstbijzijnde kaartje precies
+   vooraan staat (snap) — daarna staat alles weer volledig stil.
    ===================================================== */
-const PIXELS_TO_WORLD = 0.03;
+const PIXELS_TO_WORLD = 0.012;  // lager = fijnere / minder gevoelige besturing
 const FRAME_MS = 1000 / 60;
-const MAX_SPEED = 0.4;  // wereld-eenheden fase per 60fps-frame-equivalent — harde cap per event
+const MAX_SPEED = 0.22;         // wereld-eenheden fase per 60fps-frame-equivalent — harde cap per event
+const IDLE_SNAP_DELAY = 160;    // ms stilstand voor de snap-animatie start
+const SNAP_EASE = 0.12;         // hoe snel de snap-animatie het doel nadert
+const SNAP_DONE_EPSILON = 0.0008;
 
 let phase = 0;
 let lastPointerY = null;
 let lastPointerTime = 0;
+let idleTimer = null;
+let snapping = false;
+let snapTarget = 0;
+
+function scheduleSnap() {
+  snapping = false;
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    snapTarget = findSnapTarget(phase);
+    snapping = true;
+  }, IDLE_SNAP_DELAY);
+}
 
 window.addEventListener("pointermove", (e) => {
   const now = performance.now();
@@ -150,21 +201,41 @@ window.addEventListener("pointermove", (e) => {
     const dy = e.clientY - lastPointerY; // omlaag = positief
     const rawStep = -dy * PIXELS_TO_WORLD;
     const maxStep = MAX_SPEED * (dt / FRAME_MS);
-    phase += THREE.MathUtils.clamp(rawStep, -maxStep, maxStep);
+    const step = THREE.MathUtils.clamp(rawStep, -maxStep, maxStep);
+    if (step !== 0) {
+      phase += step;
+      scheduleSnap();
+    }
   }
   lastPointerY = e.clientY;
   lastPointerTime = now;
 }, { passive: true });
 
+scheduleSnap(); // ook meteen bij het laden netjes uitlijnen als dat nodig is
+
 /* =====================================================
-   RENDER LOOP — herrendert continu (voor toekomstige hover-polish),
-   maar de fase zelf beweegt alleen via de pointermove-handler hierboven.
+   RENDER LOOP
    ===================================================== */
-function tick() {
+function tick(now) {
+  if (lastFrameTime === null) lastFrameTime = now;
+  const dt = Math.min(now - lastFrameTime, 100);
+  lastFrameTime = now;
+  const dtFactor = dt / FRAME_MS;
+
+  if (snapping) {
+    const ease = 1 - Math.pow(1 - SNAP_EASE, dtFactor); // frame-rate-onafhankelijk
+    phase += (snapTarget - phase) * ease;
+    if (Math.abs(snapTarget - phase) < SNAP_DONE_EPSILON) {
+      phase = snapTarget;
+      snapping = false;
+    }
+  }
+
   layoutCards(phase);
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
+let lastFrameTime = null;
 
 layoutCards(phase);
 requestAnimationFrame(tick);
