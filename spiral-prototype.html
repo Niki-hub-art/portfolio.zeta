@@ -68,7 +68,7 @@ const container = document.getElementById("scene-container");
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
-camera.position.set(0, 0.5, 25);
+camera.position.set(0, 0, 58); // y=0: recht op de as, geen kanteling
 camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -87,11 +87,11 @@ scene.add(keyLight);
    zichtbare cilinder/buis) en bewegen tegelijk verticaal —
    een echte helix, geen platte kolom.
    ===================================================== */
-const RADIUS = 13;                  // afstand van de kaartjes tot de centrale as
-const CARD_WIDTH = 2.9, CARD_HEIGHT = 1.74; // breed rechthoekig, geen vierkant — fors groter
+const RADIUS = 32;                  // afstand van de kaartjes tot de centrale as (vergroot voor veilige tangentiële ruimte)
+const CARD_WIDTH = 2.9, CARD_HEIGHT = 1.74; // breed rechthoekig, geen vierkant
 const NUM_VISIBLE_TURNS = 3;        // hele getal -> naadloze hoek-wrap
-const LOOP_HEIGHT = 92;             // modulo-periode (wereld-eenheden)
-const NUM_CARD_SLOTS = 27;          // aantal kaartjes dat de 5 projecten herhaalt (minder tegelijk zichtbaar, en dat mag)
+const LOOP_HEIGHT = 130;            // modulo-periode (wereld-eenheden) — groter voor veel meer buffer rond het naadpunt
+const NUM_CARD_SLOTS = 55;          // aantal kaartjes — meer, voor kleinere tussenafstand (compacter)
 const CARD_SPACING = LOOP_HEIGHT / NUM_CARD_SLOTS;
 const ANGULAR_RATE = (2 * Math.PI * NUM_VISIBLE_TURNS) / LOOP_HEIGHT;
 
