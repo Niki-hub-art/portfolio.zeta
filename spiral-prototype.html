@@ -29,7 +29,7 @@
 </head>
 <body>
 <div id="scene-container"></div>
-<div id="hint">beweeg cursor omlaag om te versnellen</div>
+<div id="hint">cursor boven/onder het midden = richting &amp; snelheid</div>
 <script type="module">
 import * as THREE from "three";
 
@@ -67,8 +67,8 @@ const PROJECTS = ["Website 1", "Website 2", "Website 3", "Website 4", "Website 5
 const container = document.getElementById("scene-container");
 const scene = new THREE.Scene();
 
-const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
-camera.position.set(0, 0, 58); // y=0: recht op de as, geen kanteling
+const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 150);
+camera.position.set(0, 0, 72); // y=0: recht op de as, geen kanteling
 camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -87,13 +87,33 @@ scene.add(keyLight);
    zichtbare cilinder/buis) en bewegen tegelijk verticaal —
    een echte helix, geen platte kolom.
    ===================================================== */
-const RADIUS = 32;                  // afstand van de kaartjes tot de centrale as (vergroot voor veilige tangentiële ruimte)
-const CARD_WIDTH = 2.9, CARD_HEIGHT = 1.74; // breed rechthoekig, geen vierkant
+const RADIUS = 40;                  // afstand van de kaartjes tot de centrale as (vergroot om de grotere/dichtere kaartjes veilig te dragen)
+const CARD_WIDTH = 4.1, CARD_HEIGHT = 2.46; // breed rechthoekig, fors groter dan voorheen (was 2.9 x 1.74)
 const NUM_VISIBLE_TURNS = 3;        // hele getal -> naadloze hoek-wrap
-const LOOP_HEIGHT = 130;            // modulo-periode (wereld-eenheden) — groter voor veel meer buffer rond het naadpunt
-const NUM_CARD_SLOTS = 55;          // aantal kaartjes — meer, voor kleinere tussenafstand (compacter)
+const LOOP_HEIGHT = 130;            // modulo-periode (wereld-eenheden) — ongewijzigd, bewaart de geverifieerde naadpunt-buffer
+const NUM_CARD_SLOTS = 72;          // meer kaartjes over dezelfde LOOP_HEIGHT -> kleinere tussenafstand (compacter)
 const CARD_SPACING = LOOP_HEIGHT / NUM_CARD_SLOTS;
 const ANGULAR_RATE = (2 * Math.PI * NUM_VISIBLE_TURNS) / LOOP_HEIGHT;
+
+// Dunne, licht doorschijnende cilinder op exact dezelfde as/straal als het
+// kaartjes-pad, zodat de kaartjes er visueel "op geplakt" lijken.
+const CYLINDER_RADIUS = RADIUS * 0.97; // net iets kleiner, zodat kaartjes vlak op/tegen het oppervlak zitten zonder z-fighting
+const cylinderGeo = new THREE.CylinderGeometry(CYLINDER_RADIUS, CYLINDER_RADIUS, LOOP_HEIGHT, 64, 1, true);
+// MeshStandardMaterial (niet MeshBasicMaterial) zodat de bestaande scene-lichten
+// een schaduw-gradiënt over het gebogen oppervlak geven — anders is een
+// onbelichte transparante cilinder gewoon een platte kleurtint over het hele
+// scherm, zonder enige visuele aanwijzing dat het om een ronde buis gaat.
+const cylinderMat = new THREE.MeshStandardMaterial({
+  color: 0x2d5bdb,
+  transparent: true,
+  opacity: 0.13,
+  roughness: 0.4,
+  metalness: 0.1,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const cylinderMesh = new THREE.Mesh(cylinderGeo, cylinderMat);
+scene.add(cylinderMesh);
 
 // Hoe dicht een kaartje qua hoek bij "vooraan" (angle 0) moet zijn om
 // het extra focus-vergroting te krijgen, en hoeveel groter het dan wordt.
@@ -151,39 +171,36 @@ function layoutCards(phase) {
 
 /* =====================================================
    BEWEGING — doorlopende, autonome rotatie die nooit vanzelf stopt
-   (rustig basistempo, ONGEWIJZIGD), met een tijdelijke versnelling
-   wanneer de cursor in dezelfde richting meebeweegt.
+   (rustig basistempo, ONGEWIJZIGD), met een positie-gebaseerde
+   versnelling: niet de cursor-BEWEGING (delta/frame) bepaalt de
+   snelheid, maar de cursor-POSITIE zelf, als percentage van de halve
+   vensterhoogte t.o.v. het midden. Dit blijft dus werken zolang de
+   cursor stilstaat op een positie (bv. tegen de rand van het scherm),
+   in tegenstelling tot het oude delta-systeem dat terugviel naar het
+   basistempo zodra er geen nieuwe beweging meer binnenkwam.
 
-   De cursorsnelheid wordt per RENDERFRAME geschat (nooit per los
-   pointermove-event) — een event-to-event tijdsverschil kan toevallig
-   heel klein zijn, wat de oude per-event (dy/dt)-schatting soms liet
-   pieken en zo een abrupte sprong gaf. Door ruwe pixels te accumuleren
-   en pas één keer per frame om te rekenen naar een snelheid, en die
-   vervolgens door twee lagen vloeiende demping te halen (snelheid ->
-   boost -> tempo), is de opbouw altijd een continue curve zonder
-   sprongen, met een duidelijk lager maximum dan voorheen.
+   Boven het midden = negatieve offset = tegengestelde richting;
+   onder het midden = positieve offset = zelfde richting als het
+   basistempo. Op precies het midden (offset 0) is de doelsnelheid
+   exact BASE_SPEED — het rustige basistempo is dus een natuurlijk
+   speciaal geval van deze formule, geen aparte code-pad.
    ===================================================== */
 const FRAME_MS = 1000 / 60;
-const BASE_SPEED = 0.0075;   // fase-eenheden per 60fps-frame — rustig, doorlopend basistempo (ongewijzigd)
-const BOOST_GAIN = 0.01;
-const MAX_BOOST = 0.16;      // duidelijk lager dan voorheen (was 0.38)
-const VELOCITY_EASE = 0.2;   // vloeit de ruwe pixels/frame-schatting glad
-const BOOST_EASE = 0.1;      // vloeit de boost geleidelijk naar zijn doelwaarde (op- én afbouw)
-const SPEED_EASE = 0.12;     // vloeit het uiteindelijke tempo (ongewijzigd)
+const BASE_SPEED = 0.0075;   // fase-eenheden per 60fps-frame — rustig, doorlopend basistempo (ongewijzigd, expliciet vastgezet)
+const MAX_BOOST = 0.16;      // maximale extra snelheid bij volle uitwijking naar de rand (ongewijzigd t.o.v. vorige ronde)
+const POSITION_EASE = 0.12;  // vloeit de doelsnelheid geleidelijk in (zelfde soort easing als voorheen SPEED_EASE)
 
 let phase = 0;
 let currentSpeed = BASE_SPEED;
-let boost = 0;
-let velocitySmoothed = 0;
-let pendingPixels = 0; // ruwe omlaag-beweging sinds het laatst gerenderde frame
-let lastPointerY = null;
+let pointerOffsetRatio = 0; // -1 (bovenrand) .. 0 (midden) .. 1 (onderrand)
+
+function updatePointerOffset(clientY) {
+  const halfHeight = window.innerHeight / 2;
+  pointerOffsetRatio = THREE.MathUtils.clamp((clientY - halfHeight) / halfHeight, -1, 1);
+}
 
 window.addEventListener("pointermove", (e) => {
-  if (lastPointerY !== null) {
-    const dy = e.clientY - lastPointerY; // omlaag = positief
-    if (dy > 0) pendingPixels += dy; // enkel accumuleren — geen timing/snelheid hier
-  }
-  lastPointerY = e.clientY;
+  updatePointerOffset(e.clientY);
 }, { passive: true });
 
 /* =====================================================
@@ -219,20 +236,11 @@ function tick(now) {
   lastFrameTime = now;
   const dtFactor = dt / FRAME_MS;
 
-  // Eén snelheids-schatting per frame (pixels per 60fps-frame-equivalent),
-  // niet per event — dit is wat de vorige abrupte sprong voorkomt.
-  const pixelsThisFrame = dtFactor > 0 ? pendingPixels / dtFactor : 0;
-  pendingPixels = 0;
-
-  const velocityEaseFactor = 1 - Math.pow(1 - VELOCITY_EASE, dtFactor);
-  velocitySmoothed += (pixelsThisFrame - velocitySmoothed) * velocityEaseFactor;
-
-  const boostTarget = Math.min(velocitySmoothed * BOOST_GAIN, MAX_BOOST);
-  const boostEaseFactor = 1 - Math.pow(1 - BOOST_EASE, dtFactor);
-  boost += (boostTarget - boost) * boostEaseFactor;
-
-  const targetSpeed = BASE_SPEED + boost;
-  currentSpeed += (targetSpeed - currentSpeed) * (1 - Math.pow(1 - SPEED_EASE, dtFactor));
+  // Doelsnelheid rechtstreeks uit de huidige cursor-POSITIE (niet uit
+  // beweging), dus dit blijft gelden zolang de cursor stil op die
+  // positie blijft staan — ook aan de fysieke rand van het scherm.
+  const targetSpeed = BASE_SPEED + pointerOffsetRatio * MAX_BOOST;
+  currentSpeed += (targetSpeed - currentSpeed) * (1 - Math.pow(1 - POSITION_EASE, dtFactor));
   phase += currentSpeed * dtFactor;
 
   layoutCards(phase);
